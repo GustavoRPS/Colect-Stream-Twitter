@@ -13,6 +13,8 @@ import threading, tweepy, socket, traceback, sys
 
 import requests, urllib, urllib3
 
+#import datasource.elasticsearch
+
 #######################################
 urllib3.disable_warnings()
 
@@ -25,6 +27,8 @@ filename_log = ''
 filename_keys = '';
 filename_querys = '';
 
+sendTelegram = False
+chat_id = 0
 
 NUM_PER_INSERT = 10 ;
 DATE_FORMAT_TWITTER = "%a %b %d %H:%M:%S %z %Y";
@@ -50,8 +54,10 @@ class log_collector():
 		# self.file.write(log)
 
 	def send_telegram(self,text):
-		print(text)
-		chat_id = 42637535		
+		if not sendTelegram:
+			return
+
+		print(text)			
 		params = {'chat_id':chat_id,'text':text}
 		
 		try:			
@@ -163,11 +169,12 @@ class Collector(threading.Thread):
 		self.main()
 
 	def stop(self):				
-		print "Stopping collector: " +  ", ".join(c for c in self.query)
+		print("Stopping collector: " +  ", ".join(c for c in self.query))
 		self.active = False	
+		self.connected = False
 		if 	self.stream is not None:
 			self.stream.disconnect()		
-		# print dir(self.stream)
+		
 		
 class StreamingListener(tweepy.StreamListener):
 	def __init__(self, collector, *args, **kwargs):
@@ -233,14 +240,15 @@ class StreamingListener(tweepy.StreamListener):
 			# print(json.dumps(twitter_obj,indent=4))
 			self.collector.count += 1
 
-			self.collector.list_temp_tweets_to_insert.append(twitter_obj)        
+			self.collector.list_temp_tweets_to_insert.append(twitter_obj) 
+
 	        
 			try:
 				if((self.collector.count % NUM_PER_INSERT) == 0):             
 					# twitter_collection.insert(self.collector.list_temp_tweets_to_insert)
 					saveData(self.collector.list_temp_tweets_to_insert)				
 					log_system.insert_tweets(NUM_PER_INSERT)
-					print 'save in database {0} tweets'.format(NUM_PER_INSERT)
+					print('save in database {0} tweets'.format(NUM_PER_INSERT))	
 					self.collector.list_temp_tweets_to_insert = []			
 			except Exception as e:
 				log_system.error('saveInDatabase',e)			
@@ -271,20 +279,25 @@ class StreamingListener(tweepy.StreamListener):
 
 ######################### Funções ################################
 def getConfig():
-	global api_database, api_bot_telegram, api_categorize, api_categorize2,NUM_PER_INSERT, filename_keys, filename_querys, filename_log, categorize_namefield
+	global api_database, api_bot_telegram, api_categorize, api_categorize2,NUM_PER_INSERT, filename_keys, filename_querys, filename_log, categorize_namefield, chat_id, sendTelegram
 	try:
 		data = {}
 		with open('config.json') as data_file:    
 			data = json.load(data_file)
 
 		if data:
+
 			endpoints = data.get('endpoints')
 			files = data.get('files')			
 			collector = data.get('collector')
+			
+
 
 			NUM_PER_INSERT = collector.get('NUM_PER_INSERT')
 			categorize_namefield = collector.get('categorize_namefield')
 
+			sendTelegram = collector.get('sendTelegram')
+			chat_id = collector.get('chat_id')
 
 			api_database = endpoints.get('api_database')
 			api_bot_telegram = endpoints.get('api_bot_telegram')
@@ -296,7 +309,7 @@ def getConfig():
 			filename_querys = files.get('filename_querys')								
 			pass
 		pass
-	except Exception as e:
+	except Exception as e:		
 		log_system.error('getConfig',e)
 	pass
 
@@ -354,7 +367,7 @@ def categoriza(status, api_categorize):
 		if place:		
 			place = place['full_name']
 			place = str(unicode(place).encode('utf-8'))		
-			print place
+			print(place)
 
 		else:
 			place = ""
@@ -372,10 +385,7 @@ def categoriza(status, api_categorize):
 		r = requests.get(api_categorize, params=params)
 		
 		r.raise_for_status()
-		categories = r.json()
-		# print json.dumps(r.json(), indent=4)
-
-		# print '[user]:{0}\t[text]:{1}\t[location]:{2}\t[place]:{3}'.format(username, text, location, place)
+		categories = r.json()		
 		return categories
 	except Exception as e:
 		log_system.error('request categoriza', e)		
@@ -392,14 +402,19 @@ def get_articles(status):
 
 def saveData(data):
 	data=json.dumps(data)
+	headers = {'user-agent': 'coletor-tweets', 'content-type': 'application/json'}		
 	try:
-		headers = {'user-agent': 'coletor-tweets', 'content-type': 'application/json'}		
 
 		r = requests.post(api_database, data=data, headers=headers)
 		r.raise_for_status()
 		
 		return {'ok':1, 'msg':'gravado com sucesso'}			
 	except requests.exceptions.HTTPError as e:
+		log_system.error('saveData',e)
+
+	try:
+		pass
+	except Exception as e:
 		log_system.error('saveData',e)
 
 ###################################################################
@@ -424,7 +439,7 @@ def main():
 			key = get_key(); 
 
 		query['track'] = [str(unicode(x).encode('utf-8')).decode("utf-8") for x in query['track']]
-		# print query['track'][0]
+		
 		c = Collector(query['track'], query['languages'], key)
 				
 		c.start()
@@ -435,10 +450,10 @@ def main():
 		try:
 			raw_input('Ctrl+C stop program')
 		except (KeyboardInterrupt, EOFError):
-			print 'stopping program...'
+			print('stopping program...')
 			for c in active_collectors:
 				c.stop();				
-			print 'program stop.'			
+			print('program stop.')	
 			sys.exit()
 		
 		
